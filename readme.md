@@ -2,14 +2,15 @@
 
 ## How To Use The Script
 For 5 inch screens, run 
-'''
+
+```
 python stats5.py
-'''
+```
 
 For 3.5 inch screens, run
-'''
+```
 python stats3.5.py
-'''
+```
 
 ## Acknowledgements
 Thanks to [mathoudebine](https://github.com/mathoudebine) for his [turing-smart-screen-python]/9https://github.com/mathoudebine/turing-smart-screen-python/) project upon which this project is
