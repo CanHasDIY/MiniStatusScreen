@@ -8,8 +8,6 @@ import psutil
 import subprocess
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
-import RPi.GPIO as GPIO
-from smbus2 import SMBus
 
 logging.basicConfig(
     level=logging.DEBUG,
@@ -28,6 +26,7 @@ GPU_COLOR = (0, 128, 0)       # Dark green for GPU stats
 TEXT_COLOR = (255, 255, 255)  # White text
 UPDATE_INTERVAL = 0.5         # seconds
 BACKGROUND_IMG = "background.png"
+OUTPUT_DIR = "lcd_output"     # Directory to save frames if no LCD is connected
 
 # Bar vertical offset (in pixels) to align bars with text.
 BAR_OFFSET = 1
@@ -40,40 +39,51 @@ class LcdDisplay:
         self.image = Image.new('RGB', (self.width, self.height), BG_COLOR)
         self.draw = ImageDraw.Draw(self.image)
         self.fonts = {}
+        self.frame_count = 0
         
-        # Initialize SPI connection to LCD
-        # Note: Actual initialization depends on your specific LCD hardware
-        # This is a generic template - modify according to your LCD hardware
-        self._init_lcd_hardware()
+        # Create output directory for frames if it doesn't exist
+        if not os.path.exists(OUTPUT_DIR):
+            os.makedirs(OUTPUT_DIR)
+            
+        # Try to detect available LCD drivers
+        self.lcd_type = self._detect_lcd_type()
+        if self.lcd_type:
+            logging.info(f"Detected LCD type: {self.lcd_type}")
+        else:
+            logging.warning("No LCD hardware detected, will save frames to files")
         
-    def _init_lcd_hardware(self):
-        # Initialize LCD hardware - this would be specific to your LCD model
-        # For example, for a common SPI display using the ST7735 driver:
+    def _detect_lcd_type(self):
+        """Try to detect available LCD hardware"""
+        # Check for common Linux LCD drivers and interfaces
         try:
-            # For a generic SPI display with hardware control pins
-            # Replace with your LCD's specific library/initialization
-            logging.info("Initializing LCD hardware")
-            
-            # Example: If using Adafruit's CircuitPython library for displays
-            # import board
-            # import digitalio
-            # import adafruit_ili9341
-            # 
-            # cs_pin = digitalio.DigitalInOut(board.D5)
-            # dc_pin = digitalio.DigitalInOut(board.D6)
-            # reset_pin = digitalio.DigitalInOut(board.D4)
-            # 
-            # spi = board.SPI()
-            # self.display = adafruit_ili9341.ILI9341(spi, cs=cs_pin, dc=dc_pin, rst=reset_pin)
-            
-            logging.info("LCD hardware initialized")
+            # Check for FB devices (framebuffer)
+            if os.path.exists('/dev/fb0') or os.path.exists('/dev/fb1'):
+                return "framebuffer"
+                
+            # Check if this is running on a system with X11
+            if 'DISPLAY' in os.environ:
+                return "x11"
+                
+            # Check for specific hardware
+            import subprocess
+            i2c_out = subprocess.run(['i2cdetect', '-l'], capture_output=True, text=True)
+            if "No such file or directory" not in i2c_out.stderr:
+                return "i2c"
+                
         except Exception as e:
-            logging.error(f"Failed to initialize LCD: {str(e)}")
+            logging.warning(f"Error detecting LCD hardware: {e}")
             
+        return None
+        
     def _get_font(self, font_path, size):
         key = f"{font_path}_{size}"
         if key not in self.fonts:
-            self.fonts[key] = ImageFont.truetype(font_path, size)
+            try:
+                self.fonts[key] = ImageFont.truetype(font_path, size)
+            except OSError:
+                # Fallback to default font if specified one not found
+                logging.warning(f"Font {font_path} not found, using default")
+                self.fonts[key] = ImageFont.load_default()
         return self.fonts[key]
     
     def Reset(self):
@@ -81,7 +91,8 @@ class LcdDisplay:
         logging.debug("Resetting display")
         self.image = Image.new('RGB', (self.width, self.height), BG_COLOR)
         self.draw = ImageDraw.Draw(self.image)
-        # Hardware reset would go here
+        self.frame_count = 0
+        # Hardware reset would go here if we had actual hardware
         
     def SetBrightness(self, level):
         # Set LCD brightness level (0-100)
@@ -90,12 +101,15 @@ class LcdDisplay:
         
     def DisplayBitmap(self, image_path):
         try:
-            bg = Image.open(image_path).convert('RGB')
-            bg = bg.resize((self.width, self.height))
-            self.image = bg.copy()
-            self.draw = ImageDraw.Draw(self.image)
-            self._update_display()
-            logging.debug(f"Displayed bitmap: {image_path}")
+            if os.path.exists(image_path):
+                bg = Image.open(image_path).convert('RGB')
+                bg = bg.resize((self.width, self.height))
+                self.image = bg.copy()
+                self.draw = ImageDraw.Draw(self.image)
+                self._update_display()
+                logging.debug(f"Displayed bitmap: {image_path}")
+            else:
+                logging.warning(f"Image file not found: {image_path}")
         except Exception as e:
             logging.error(f"Failed to display bitmap: {str(e)}")
             
@@ -109,7 +123,6 @@ class LcdDisplay:
                 x = x - (text_width // 2)
                 
             self.draw.text((x, y), text, font=font_obj, fill=font_color)
-            self._update_display()
         except Exception as e:
             logging.error(f"Failed to display text: {str(e)}")
             
@@ -132,17 +145,37 @@ class LcdDisplay:
             # Draw outline
             if bar_outline:
                 self.draw.rectangle([(x, y), (x + width, y + height)], outline=TEXT_COLOR)
-                
-            self._update_display()
         except Exception as e:
             logging.error(f"Failed to display progress bar: {str(e)}")
             
     def _update_display(self):
-        # Send the image to the LCD
-        # Implementation depends on LCD hardware
-        # For example, with Adafruit CircuitPython:
-        # self.display.image(self.image)
-        pass
+        """Update the physical display or save image to file"""
+        if self.lcd_type == "framebuffer":
+            # Example for framebuffer devices
+            try:
+                fb_device = '/dev/fb0'  # or '/dev/fb1'
+                with open(fb_device, 'wb') as fb:
+                    fb.write(self.image.tobytes())
+            except Exception as e:
+                logging.error(f"Failed to write to framebuffer: {e}")
+                
+        elif self.lcd_type == "x11":
+            # If running in X11 environment, display image in a window
+            try:
+                self.image.show()  # This will open a new window each time
+            except:
+                self._save_frame()
+                
+        else:
+            # Save to file if no LCD hardware is available
+            self._save_frame()
+            
+    def _save_frame(self):
+        """Save current frame to file"""
+        filename = os.path.join(OUTPUT_DIR, f"frame_{self.frame_count:04d}.png")
+        self.image.save(filename)
+        logging.debug(f"Saved frame to {filename}")
+        self.frame_count += 1
         
     def InitializeComm(self):
         logging.debug("Initializing display communication")
@@ -150,8 +183,7 @@ class LcdDisplay:
         pass
 
     def SetOrientation(self, orientation):
-        logging.debug(f"Setting orientation to landscape")
-        # Implementation depends on LCD hardware
+        logging.debug(f"Setting orientation: {orientation}")
         pass
 
 # ====== Sensor Query Functions ======
@@ -179,7 +211,7 @@ def get_cpu_stats():
     if freq_info:
         stats["clock"] = freq_info.current
     else:
-        # Alternative method for Raspberry Pi
+        # Alternative method
         try:
             with open('/sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq', 'r') as f:
                 stats["clock"] = float(f.read().strip()) / 1000  # Convert kHz to MHz
@@ -204,11 +236,14 @@ def get_cpu_stats():
         if temps:
             stats["temp"] = max(temps)  # Use the highest temperature
         
-        # If that fails, try Raspberry Pi specific method
+        # If that fails, try lm-sensors
         if stats["temp"] == 0.0:
             try:
-                output = subprocess.check_output(['vcgencmd', 'measure_temp']).decode('utf-8')
-                stats["temp"] = float(output.split('=')[1].split("'")[0])
+                sensors_output = subprocess.check_output(['sensors'], text=True)
+                # Look for lines like "Core 0: +45.0°C"
+                temp_matches = re.findall(r'Core \d+:\s+\+(\d+\.\d+)°C', sensors_output)
+                if temp_matches:
+                    stats["temp"] = max(float(t) for t in temp_matches)
             except:
                 pass
     except Exception as e:
@@ -251,8 +286,8 @@ def get_gpu_stats():
             stats["mem_total"] = float(values[5])
             stats["mem_percent"] = (stats["mem_used"] / stats["mem_total"]) * 100
             return stats
-    except:
-        pass
+    except Exception as e:
+        logging.debug(f"Failed to get NVIDIA GPU stats: {e}")
     
     # Try AMD GPU (using rocm-smi)
     try:
@@ -285,8 +320,29 @@ def get_gpu_stats():
         stats["mem_percent"] = stats["util"]  # Approximate with GPU utilization
         
         return stats
-    except:
-        pass
+    except Exception as e:
+        logging.debug(f"Failed to get AMD GPU stats: {e}")
+    
+    # Try Intel GPU
+    try:
+        # Intel GPU info can be found in sysfs or using intel_gpu_top
+        intels = [i for i in os.listdir('/sys/class/drm/') if i.startswith('card')]
+        if intels:
+            stats["name"] = "Intel GPU"
+            # Most stats will be placeholder as Intel doesn't expose them easily without extra tools
+            stats["util"] = 0.0
+            stats["mem_percent"] = 0.0
+            
+            # Try to get GPU frequency if available
+            try:
+                with open('/sys/class/drm/card0/gt_cur_freq_mhz', 'r') as f:
+                    stats["clock"] = float(f.read().strip())
+            except:
+                stats["clock"] = 0.0
+                
+            return stats
+    except Exception as e:
+        logging.debug(f"Failed to get Intel GPU stats: {e}")
     
     return stats
 
@@ -417,10 +473,14 @@ def draw_dynamic_stats(lcd, cpu_name):
                     font_color=TEXT_COLOR, background_color=BG_COLOR, anchor="mt")
     lcd.DisplayText(clock_str, x=400, y=300, font=FONT_PATH, font_size=10,
                     font_color=TEXT_COLOR, background_color=BG_COLOR, anchor="mt")
+                    
+    # Update the display after all elements are drawn
+    lcd._update_display()
 
 def main():
     # Get CPU name
-    cpu_name = get_cpu_info().split(' ', 1)[1] if len(get_cpu_info().split(' ', 1)) > 1 else get_cpu_info()
+    cpu_full_name = get_cpu_info()
+    cpu_name = cpu_full_name.split(' ', 1)[1] if len(cpu_full_name.split(' ', 1)) > 1 else cpu_full_name
     
     # Initialize display
     lcd = LcdDisplay(display_width=DISPLAY_WIDTH, display_height=DISPLAY_HEIGHT)
@@ -434,7 +494,6 @@ def main():
         lcd.DisplayBitmap(BACKGROUND_IMG)
     except:
         logging.warning(f"Could not load background image {BACKGROUND_IMG}, using blank background")
-    logging.debug("Initial background displayed.")
     
     # Draw static elements
     draw_static_text(lcd, cpu_name)
@@ -451,8 +510,6 @@ def main():
         logging.error(f"Error in main loop: {str(e)}")
     finally:
         logging.info("Cleaning up")
-        # Cleanup code here if needed
-        GPIO.cleanup()
 
 if __name__ == "__main__":
     try:
