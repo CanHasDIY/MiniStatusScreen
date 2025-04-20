@@ -1,5 +1,20 @@
 # Mini Status Screen - A Python Script
 
+This script is designed to work in Windows 10/11 with Turing IPS (and compatible) USB screens. I'm working on a Debian script but it's not working right yet.
+
+## Installation
+Clone the repo and enter the directory:
+```
+gh repo clone CanHasDIY/MiniStatusScreen
+
+cd MiniStatusScreen
+```
+
+Install the dependencies:
+```
+pip install -r requirements.txt
+```
+
 ## How To Use The Script
 For 5 inch screens, run 
 
